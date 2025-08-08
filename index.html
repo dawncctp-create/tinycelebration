@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -13,6 +14,17 @@
       --muted:#334155;
       --border: rgba(15,23,42,.18);
       --ring:#22c55e;
+
+      /* Star palette */
+      --gold:#fbbf24;
+      --gold-stroke:#0f5132;   /* deep green outline */
+      --silver:#c0c0c0;
+      --silver-stroke:#0f5132; /* deep green outline */
+      --purple:#8b5cf6;        /* rich purple fill */
+      --purple-stroke:#f59e0b; /* warm gold outline */
+      /* Popup */
+      --popup-bg:#0f5132;      /* deep green */
+      --popup-fg:#f59e0b;      /* warm gold */
     }
     *{box-sizing:border-box}
     html,body{height:100%}
@@ -31,6 +43,16 @@
       padding:24px 18px 28px;
       box-shadow:0 10px 28px rgba(0,0,0,.08);
     }
+
+    /* ===== Stars rows (added) ===== */
+    .stars{ display:grid; gap:6px; margin-bottom:12px }
+    .row{ display:flex; gap:8px; justify-content:center; align-items:center }
+    .star{ width:22px; height:22px; opacity:.95 }
+    .star .fill{ opacity:0; transform:scale(.8); transform-origin:center }
+    .star.filled .fill{ opacity:1; animation: starpop .18s ease-out }
+    @keyframes starpop{ from{transform:scale(.6)} to{transform:scale(1)} }
+
+    /* ===== Existing button & controls ===== */
     .big{
       appearance:none;
       display:block;
@@ -59,7 +81,7 @@
       color:var(--muted);
       font-size:clamp(13px,3.3vw,15px);
     }
-    .row{
+    .row-controls{
       margin-top:10px;
       display:flex; gap:12px; justify-content:center; flex-wrap:wrap;
     }
@@ -94,13 +116,31 @@
       0%{ box-shadow: 0 0 0 0 rgba(34,197,94,.85), 0 0 18px 6px rgba(34,197,94,.35) inset, 0 0 20px 6px rgba(34,197,94,.25) }
       100%{ box-shadow: 0 0 0 28px rgba(34,197,94,0), 0 0 0 0 rgba(34,197,94,0) inset, 0 0 0 0 rgba(34,197,94,0) }
     }
+
+    /* Canvas for effects */
     #fx{ position:fixed; inset:0; pointer-events:none; z-index:10; }
+
+    /* Popup toast */
+    .toast{
+      position:fixed; left:50%; top:16px; transform:translate(-50%,-8px) scale(.98);
+      background:var(--popup-bg); color:var(--popup-fg);
+      border:2px solid var(--popup-fg); border-radius:999px;
+      padding:10px 16px; font-weight:800; letter-spacing:.2px;
+      box-shadow:0 12px 30px rgba(0,0,0,.18);
+      opacity:0; pointer-events:none; z-index:50;
+      transition: opacity .25s ease, transform .25s ease;
+    }
+    .toast.show{ opacity:1; transform:translate(-50%,0) scale(1) }
+    .toast.hide{ opacity:0; transform:translate(-50%,-8px) scale(.98) }
+
     @media (min-width: 800px){
       .wrap{ width:min(760px,92vw); }
       .card{ padding:32px 28px 36px; }
     }
     @media (prefers-reduced-motion: reduce){
       .ring{ animation:none !important }
+      .star.filled .fill{ animation:none !important }
+      .toast{ transition:none }
     }
   </style>
 </head>
@@ -108,11 +148,19 @@
   <canvas id="fx"></canvas>
   <main class="wrap">
     <section class="card">
+
+      <!-- ===== Stars (added) ===== -->
+      <div class="stars" aria-label="Streak stars">
+        <div class="row" id="row-purple" aria-label="Weeks (purple)"></div>
+        <div class="row" id="row-gold" aria-label="Days (gold)"></div>
+        <div class="row" id="row-silver" aria-label="Today (silver)"></div>
+      </div>
+
       <button id="celebrate" class="big" aria-label="Celebrate. Double tap or press enter to celebrate.">
         I did it! 🎉
       </button>
       <p class="tagline">Celebrate small wins, build big habits.</p>
-      <div class="row">
+      <div class="row-controls">
         <label class="select" aria-label="Effects">
           <select id="styleSel" aria-label="Effects select">
             <option value="confetti" selected>Confetti</option>
@@ -144,6 +192,9 @@
     </section>
   </main>
 
+  <!-- Toast -->
+  <div id="toast" class="toast" role="status" aria-live="polite">You did it!</div>
+
   <script>
   (function(){
     const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -154,7 +205,108 @@
     const ctx = canvas.getContext('2d');
     let w=0,h=0, dpr=1, rafId=null;
 
-    // --- Canvas setup ---
+    // ===== Stars state (added) =====
+    const rowPurple = document.getElementById('row-purple');
+    const rowGold   = document.getElementById('row-gold');
+    const rowSilver = document.getElementById('row-silver');
+    const toast = document.getElementById('toast');
+    const sndCrowd = document.getElementById('snd-crowd');
+
+    const STAR_KEY = "tc_stars_v2";
+    const GRACE_ENABLED = true, GRACE_HOUR = 2; // 12–2am counts as prior day
+
+    function isoWithGrace(d){
+      const dt = new Date(d);
+      if(GRACE_ENABLED && dt.getHours() < GRACE_HOUR){
+        const y = new Date(dt); y.setDate(dt.getDate()-1); y.setHours(0,0,0,0);
+        return y.toISOString().slice(0,10);
+      }
+      const t = new Date(dt); t.setHours(0,0,0,0); return t.toISOString().slice(0,10);
+    }
+    function todayISO(){ return isoWithGrace(new Date()); }
+
+    function loadStars(){
+      try{
+        return JSON.parse(localStorage.getItem(STAR_KEY)) ??
+          { today: todayISO(), todayCount:0, dayStreak:0, weekStreak:0, last: null };
+      }catch{
+        return { today: todayISO(), todayCount:0, dayStreak:0, weekStreak:0, last: null };
+      }
+    }
+    let stars = loadStars();
+    function saveStars(){ localStorage.setItem(STAR_KEY, JSON.stringify(stars)); }
+
+    function rolloverIfNeeded(){
+      const now = todayISO();
+      if(stars.today !== now){
+        // yesterday is closed; check if perfect
+        if(stars.todayCount < 4){
+          // full reset across all rows
+          stars.todayCount = 0;
+          stars.dayStreak = 0;
+          stars.weekStreak = 0;
+        }else{
+          // perfect day already counted when it reached 4; just clear daily
+          stars.todayCount = 0;
+        }
+        stars.today = now;
+        saveStars();
+        renderStars();
+      }
+    }
+
+    function starSVG(kind, filled){
+      const cfg = {
+        silver: { fill:'var(--silver)', stroke:'var(--silver-stroke)' },
+        gold:   { fill:'var(--gold)',   stroke:'var(--gold-stroke)' },
+        purple: { fill:'var(--purple)', stroke:'var(--purple-stroke)' }
+      }[kind];
+      const ns = 'http://www.w3.org/2000/svg';
+      const s = document.createElementNS(ns,'svg');
+      s.setAttribute('viewBox','0 0 24 24'); s.setAttribute('class','star'+(filled?' filled':''));
+      const path = "M12 2l2.9 6.1 6.7.6-5 4.4 1.5 6.6-6.1-3.4-6.1 3.4 1.5-6.6-5-4.4 6.7-.6L12 2z";
+      const outline = document.createElementNS(ns,'path');
+      outline.setAttribute('d', path);
+      outline.setAttribute('fill','none');
+      outline.setAttribute('stroke', cfg.stroke);
+      outline.setAttribute('stroke-width','1.6');
+      outline.setAttribute('opacity','0.9');
+      const fill = document.createElementNS(ns,'path');
+      fill.setAttribute('d', path);
+      fill.setAttribute('class','fill');
+      fill.setAttribute('fill', cfg.fill);
+      s.appendChild(outline); s.appendChild(fill);
+      return s;
+    }
+
+    function renderStars(){
+      // Purple (weeks): show once weekStreak > 0; 5 slots loop
+      rowPurple.innerHTML = "";
+      if(stars.weekStreak > 0){
+        const filled = ((stars.weekStreak - 1) % 5) + 1;
+        for(let i=1;i<=5;i++) rowPurple.appendChild(starSVG('purple', i<=filled));
+      }
+      // Gold (days): show after first perfect day
+      rowGold.innerHTML = "";
+      if(stars.dayStreak > 0 || stars.weekStreak > 0){
+        for(let i=1;i<=7;i++) rowGold.appendChild(starSVG('gold', i<=stars.dayStreak));
+      }
+      // Silver (today): always show 4 outlines
+      rowSilver.innerHTML = "";
+      for(let i=1;i<=4;i++) rowSilver.appendChild(starSVG('silver', i<=stars.todayCount));
+    }
+
+    function showToast(){
+      toast.classList.remove('hide'); // reset
+      // force reflow
+      void toast.offsetWidth;
+      toast.classList.add('show');
+      try { sndCrowd.currentTime = 0; sndCrowd.play().catch(()=>{}); } catch(e){}
+      setTimeout(()=> toast.classList.add('hide'), 1400);
+      setTimeout(()=> toast.classList.remove('show'), 1500);
+    }
+
+    // ===== Existing canvas/effects setup (unchanged) =====
     function resize(){
       dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
       w = canvas.width = Math.floor(window.innerWidth * dpr);
@@ -165,7 +317,6 @@
     }
     window.addEventListener('resize', resize, {passive:true}); resize();
 
-    // --- Sound playback with <audio> elements ---
     const audios = {
       "crowd": document.getElementById('snd-crowd'),
       "fanfare": document.getElementById('snd-fanfare'),
@@ -176,14 +327,33 @@
       if(key === 'off') return;
       const el = audios[key];
       if(!el) return;
-      try {
-        el.currentTime = 0;
-        el.play().catch(()=>{});
-      } catch(e){}
+      try { el.currentTime = 0; el.play().catch(()=>{}); } catch(e){}
     }
 
-    // --- Celebrate ---
     function celebrate(){
+      rolloverIfNeeded();
+
+      // ===== Stars progression (added) =====
+      const before = stars.todayCount;
+      if(stars.todayCount < 4){
+        stars.todayCount++;
+        if(before === 3){
+          // completed a perfect day
+          stars.dayStreak = Math.min(7, stars.dayStreak + 1);
+          if(stars.dayStreak === 7){
+            stars.weekStreak += 1;
+            stars.dayStreak = 0;
+            // On every 5th purple completion, show popup + cheering
+            if(stars.weekStreak % 5 === 0){
+              showToast();
+            }
+          }
+        }
+        saveStars();
+        renderStars();
+      }
+
+      // ===== Original celebration visuals/sounds =====
       if(!prefersReduced && btn.animate){
         btn.animate([{transform:'scale(1)'},{transform:'scale(1.06)'},{transform:'scale(1)'}], {duration:200,easing:'ease-out'});
       }
@@ -280,8 +450,12 @@
       rafId=requestAnimationFrame(frame);
     }
 
+    // wire
     btn.addEventListener('click', celebrate);
     btn.addEventListener('keydown', (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); celebrate(); }});
+    // initial paint
+    rolloverIfNeeded();
+    renderStars();
     btn.focus();
   })();
   </script>
